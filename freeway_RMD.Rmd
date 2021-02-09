@@ -1,0 +1,965 @@
+---
+title: "作品名稱：針對高事故發生地區之事故預測模型"
+author: "隊伍名稱：Civit"
+CJKmainfont: Microsoft YaHei
+output:
+  pdf_document:
+    includes:
+      header-includes:
+        - \usepackage{xeCJK}
+    keep_tex: yes
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      error = FALSE,
+                      cache = TRUE)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(car)
+library(gridExtra)
+
+data = read_csv("C:/Users/User/Desktop/freeway/freeway_main.csv")
+```
+
+## EDA 
+
+### modify
+
+```{r}
+colnames(data)[c(6,7,8,9,10,11,15,16,19:29,31,32)] = c("公路名稱","公里","公尺","向車道","二十四小時內死亡人數","二至三十日內死亡人數","道路類別代碼","速限","路面狀況_路面鋪裝代碼","路面狀況_路面狀態代碼","路面狀況_路面缺陷代碼","道路障礙_障礙物代碼","道路障礙_視距代碼","號誌_號誌種類代碼","號誌_號誌動作代碼","車道劃分設施_分向設施子類別代碼","車道劃分設施_分道設施_快車道或一般車道間代碼","車道劃分設施_分道設施_快慢車道間代碼","車道劃分設施_分道設施_路面邊線代碼","肇因研判子類別代碼_主要","車種")
+data = data%>%
+  separate("發生時間", c("發生時間_時","發生時間_分","發生時間_秒"), sep = c(2,4))
+```
+
+#### missing value 
+
+```{r}
+par(mfrow = c(1,1), mar = c(3,3,2,1))
+tmp = apply(data, 2, function(x) sum(is.na(x)))
+barplot(tmp[which(tmp>0)], main = "數據中的遺失值數量")
+# find out when problem arise
+```
+
+```{r}
+index = which(is.na(data$"公尺"))
+index2 = which(colnames(data) == "公尺")
+data[index, index2] = 0
+# 0 公尺
+index = which(is.na(data$"肇因研判子類別代碼_主要"))
+index2 = which(colnames(data) == "肇因研判子類別代碼_主要")
+data[index, index2] = "43"
+# 43 不明原因肇事
+index = which(is.na(data$"車種"))
+index2 = which(colnames(data) == "車種")
+data[index, index2] = "G06"
+# G06 其他車
+```
+
+#### merge km & m 
+
+```{r}
+data%<>%
+  mutate(公里 = 公里 + 0.001*公尺)
+data = data[,-which(colnames(data) == "公尺")]
+```
+
+### count freeway
+
+```{r}
+data%>%
+  count(公路名稱, sort = T)
+```
+
+```{r}
+par(mfrow = c(2,2), mai = c(0.5,0.5,0.5,0.1))
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")
+tmp%<>%as.data.frame()
+tmp$"公里"%>%densityPlot(bw = 3, main = "國道一號-北上-意外發生頻率之核密度圖")
+abline(v = 33.9, lwd = 2, lty = 2, col = "blue")
+text(x = 33.9+80, y = 0.01, "01F0339N(高公局-五股)", cex = 1.5)
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")
+tmp%<>%as.data.frame()
+tmp$"公里"%>%densityPlot(bw = 3, main = "國道一號-南下-意外發生頻率之核密度圖")
+abline(v = 172.5, lwd = 2, lty = 2, col = "red")
+text(x = 172.5+60, y = 0.006, "01F1725S(豐原-大雅)", cex = 1.5)
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")
+tmp%<>%as.data.frame()
+tmp$"公里"%>%densityPlot(bw = 3, main = "國道三號-北上-意外發生頻率之核密度圖", col = "purple")
+abline(v = c(39.4), lwd = 2, lty = 2, col = "blue")
+text(x = 39.4+80, y = 0.01, "03F0394N(土城-中和)", cex = 1.5)
+
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")
+tmp%<>%as.data.frame()
+tmp$"公里"%>%densityPlot(bw = 3, main = "國道三號-南下-意外發生頻率之核密度圖", col = "purple")
+abline(v = c(33.7), lwd = 2, lty = 2, col = "red")
+text(x = 33.7+80, y = 0.015, "03F0337S(安坑-中和)", cex = 1.5)
+```
+
+
+### accident compare
+
+```{r}
+gg1 = data%>%
+  count(發生日期, sort = TRUE)%>%
+  filter(n > 140)%>%
+  mutate(發生日期 = reorder(發生日期, n))%>%
+  ggplot(aes(發生日期, n))+
+  geom_col()+
+  xlab(NULL)+
+  geom_hline(yintercept = 140, col = "red", lty = 2, lwd = 2)+
+  coord_flip()+
+  ggtitle("國道事故發生數量(依日期排序)")+
+  theme(plot.title = element_text(hjust = 0.5))
+gg2 = data%>%
+  count(發生時間_時, sort = TRUE)%>%
+  filter(n > 1700)%>%
+  mutate(發生時間_時 = reorder(發生時間_時, n))%>%
+  ggplot(aes(發生時間_時, n))+
+  geom_col()+
+  xlab(NULL)+
+  geom_hline(yintercept = 1700, col = "red", lty = 2, lwd = 2)+
+  coord_flip()+
+  ggtitle("國道事故發生數量(依小時排序)")+
+  theme(plot.title = element_text(hjust = 0.5))
+gg3 = data%>%
+  count(發生縣市名稱, sort = TRUE)%>%
+  filter(n > 1000)%>%
+  mutate(發生縣市名稱 = reorder(發生縣市名稱, n))%>%
+  ggplot(aes(x = 發生縣市名稱, y = n))+
+  geom_col()+
+  xlab(NULL)+
+  geom_hline(yintercept = 1000, col = "red", lty = 2, lwd = 2)+
+  coord_flip()+
+  ggtitle("國道事故發生數量(依縣市排序)")+
+  theme(plot.title = element_text(hjust = 0.5))
+gg4 = data%>%
+  count(發生市區鄉鎮名稱, sort = TRUE)%>%
+  filter(n > 550)%>%
+  mutate(發生市區鄉鎮名稱 = reorder(發生市區鄉鎮名稱, n))%>%
+  ggplot(aes(x = 發生市區鄉鎮名稱, y = n))+
+  geom_col()+
+  xlab(NULL)+
+  geom_hline(yintercept = 550, col = "red", lty = 2, lwd = 2)+
+  coord_flip()+
+  ggtitle("國道事故發生數量(依市區鄉鎮排序)")+
+  theme(plot.title = element_text(hjust = 0.5))
+grid.arrange(gg1, gg2,gg3,gg4, ncol = 2)
+remove(gg1,gg2,gg3,gg4)
+```
+```{r}
+data%>%
+  filter(發生市區鄉鎮名稱 %in% c("蘆竹區","泰山區"))%>%
+  count(事故類型及型態子類別代碼, sort = T)
+```
+```{r}
+par(mfrow = c(2,1), mai = c(0.5,0.5,0.5,0.1))
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(公里 > 30 & 公里 < 55)
+tmp%<>%as.data.frame()
+tmp$"公里"%>%densityPlot(bw = 2, main = "國道一號-30k至55k-意外發生頻率之核密度圖")
+points(x = c(32,33,35,41,49,52), y = rep(0.003,6), col = "red", pch = 17)
+tmp = data%>%
+  filter(公路名稱 == "國道2號")
+tmp%<>%as.data.frame()
+tmp$"公里"%>%densityPlot(bw = 2, main = "國道二號-0k至20k-意外發生頻率之核密度圖")
+points(x = c(0,1,4,8,11,18,20), y = rep(0.003,7), col = "red", pch = 17)
+```
+```{r}
+data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 > 166.4 & 公里 < 177.4)%>%
+  count(車道劃分設施_分道設施_快車道或一般車道間代碼,sort = T)
+data%>%
+  count(車道劃分設施_分道設施_快車道或一般車道間代碼,sort = T)
+data%>%
+  filter(事故類型及型態子類別代碼 %in% c(12,13))%>%
+  count(事故位置子類別代碼,sort = T)
+
+```
+
+### death + hurt
+
+```{r}
+data%>%
+  count(肇因研判子類別代碼_主要, sort = TRUE)%>%
+  mutate(prop = n/dim(data)[1])
+```
+
+```{r}
+data%>%
+  count(事故類型及型態子類別代碼, sort = T)
+```
+
+
+```{r}
+data%>%
+  filter(二十四小時內死亡人數 != "0" | 二至三十日內死亡人數 != "0")%>%
+  count(公路名稱, sort = TRUE)
+data%>%
+  filter(二至三十日內死亡人數 != "0")%>%
+  count(公路名稱, sort = TRUE)
+```
+
+可以看到在 2019 年, 國一以及國三為主要發生重大車禍之公路, 而其中受傷之用路人又以 24 小時內死亡為主, 2-30日死亡之數量僅占 7 件 (4件在國一,3件在國三)
+
+
+是甚麼造成死亡事件
+
+#### 交通局角度
+
+希望整體事故率下降, 降低車禍發生最需要注意哪情況發生
+
+```{r}
+tmp = data%>%
+  filter(事故類別名稱 != "A3")%>%
+  count(肇因研判子類別代碼_主要, sort = TRUE)
+tmp
+```
+
+
+23 : 未注意車前狀態,
+7 : 變換車道或方向不當,
+26 : 違反特定標誌(線)禁制,
+39 : 拋錨未採安全措施
+
+```{r}
+data%>%
+  filter(事故類別名稱 != "A3")%>%
+  count(事故類別名稱, sort = TRUE)
+```
+
+A1類交通事故係指造成人員當場或24小時內死亡之案件，
+A2類交通事故則是指造成人員受傷或24小時後死亡之案件，
+A3類指車輛碰撞造成財損，但無人員傷亡案件
+
+
+#### 自私駕駛人_肇因角度
+
+自私一點, 不管整體行車安全(追撞)以及財物損失, 受傷或死亡對他而言才是損失
+
+```{r}
+tmp = data%>%
+  count(肇因研判子類別代碼_主要, sort = TRUE)%>%
+  inner_join(tmp, by = "肇因研判子類別代碼_主要", suffix = c(".acc", ".hurt"))%>%
+  mutate(hurt_rate = n.hurt/n.acc)%>%
+  arrange(desc(hurt_rate))%>%
+  mutate(prop = n.acc/dim(data)[1])
+tmp
+```
+
+0.1 比例 : 
+
+26 : 違反特定標誌(線)禁制
+39 : 拋錨未採安全措施
+21 : 酒醉(後)駕駛失控
+22 : 疲勞(患病)駕駛失控
+14 : 未依規定減速
+13 : 超速失控
+
+
+
+#### 自私駕駛人_車種角度
+
+```{r}
+tmp1 = data%>%
+  count(車種, sort = T)
+tmp2 = data%>%
+  filter(事故類別名稱 != "A3")%>%
+  count(車種, sort = T)
+inner_join(tmp1, tmp2, by = "車種", suffix = c(".tot",".death"))%>%
+  filter(n.tot > 20)%>%
+  mutate(prop = n.death/n.tot)%>%
+  arrange(desc(prop))
+
+```
+
+(1.) 機車在高速公路出入口可能要多加留意, 因為一有事故發生就有0.83的機率受傷甚至死亡
+(2.) 於高速公路行駛時注意大客車動向
+(3.) 計程車,小貨車請小心駕駛
+
+### accident type I
+
+```{r}
+data%>%
+  count(事故類別名稱, sort = TRUE)%>%
+  mutate(prop = n/sum(n))
+```
+
+大部分都是受傷或是財物損失, 人員死亡事件較少
+
+```{r}
+tmp = data%>%
+  filter(事故類別名稱 == "A1")%>%
+  select(速限)%>%
+  as.data.frame()
+tmp$"速限"%>%densityPlot(xlim = c(0,210), ylim = c(0,0.1))
+tmp = data%>%
+  filter(事故類別名稱 == "A2")%>%
+  select(速限)%>%
+  as.data.frame()
+density(tmp$"速限")%>%lines(col = "red", lwd = 2)
+tmp = data%>%
+  filter(事故類別名稱 == "A3")%>%
+  select(速限)%>%
+  as.data.frame()
+density(tmp$"速限")%>%lines(col = "green", lwd = 2)
+legend("topright", legend = c("A1","A2","A3"), lwd = 2, col = c("black", "red", "green"), lty = 1)
+```
+
+國道事故中,不同事故類別的 density plot 看起來沒有太大的差異
+
+
+```{r}
+data%>%
+  filter(事故類別名稱 == "A1")%>%
+  count(事故位置子類別代碼)
+```
+
+死亡車禍發生在快車道
+
+```{r}
+tmp = data%>%
+  filter(事故類別名稱 == "A1")%>%
+  as.data.frame()
+tmp$"公里"%>%hist(breaks = 20)
+# 前十公里就有 12 個 24 小時內死亡車禍
+```
+
+
+```{r}
+tmp%>%
+  filter(公里 < 10.5)%>%
+  group_by(公路名稱)%>%
+  summarise(n())
+tmp%>%
+  group_by(公路名稱)%>%
+  summarise(n())
+```
+
+死亡車禍沒有特定集中在疫區的傾向
+
+多為個人因素
+譬如 : 彎道未減速, 酒駕, 或是不明原因
+
+
+### accident type II
+
+在所有國道事故中, 篩選發生次數大於一千之肇因進而排序
+
+```{r}
+data%>%
+  count(肇因研判子類別代碼_主要, sort = TRUE)%>%filter(n > 1000)
+```
+
+16未保持行車安全距離
+
+23未注意車前狀態
+
+07變換車道或方向不當
+
+上面順序同 107 年[高工局](https://www.freeway.gov.tw/Publish.aspx?cnid=516&p=2849)統計結果
+
+
+### 酒駕以及疲勞駕駛(no pattern)
+
+```{r}
+data%>%
+  filter(肇因研判子類別代碼_主要 == 21)%>%
+  count(發生時間_時, sort = T)
+  
+tmp = data%>%
+  filter(肇因研判子類別代碼_主要 == 22)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%hist(breaks = 20)
+```
+
+
+
+
+### 東西南北對照
+
+```{r}
+data%>%
+  filter(向車道 == "北")%>%
+  count(公路名稱, sort = T)
+```
+
+```{r}
+data%>%
+  filter(向車道 == "南")%>%
+  count(公路名稱, sort = T)
+```
+
+向北巷南不分軒輊
+
+```{r}
+data%>%
+  filter(向車道 %in% c("東","西"))%>%
+  count(公路名稱, sort = T)
+```
+
+
+### 向北意外發生地點(1號)
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(main = "事故發生於特定公里公尺之頻率(北向)")
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  select(公里)%>%
+  as.data.frame()
+density(tmp$"公里")%>%lines(col = "Red", lwd = 2)
+
+legend("topright", legend = c("國道三號","國道一號"), lwd = 2, col = c("black", "red"), lty = 1)
+```
+
+#### 縮小範圍至 0-100
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 100)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(main = "事故發生於特定公里公尺之頻率(北向 0~100 公里處)")
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 100)%>%
+  select(公里)%>%
+  as.data.frame()
+density(tmp$"公里")%>%lines(col = "Red", lwd = 2)
+
+legend("topright", legend = c("國道三號","國道一號"), lwd = 2, col = c("black", "red"), lty = 1)
+```
+
+##### group 1 國一北上 20-30
+
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 50 & 公里 > 15.5)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "Red", lwd = 2)
+```
+
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 33 & 公里 > 15.5)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "Red", lwd = 2)
+abline(v = c(21.3,23.3,25.6,29.3), lwd = 2, lty = 2)
+```
+##### group 2 國一北上 30-50
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 50 & 公里 > 27)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "Red", lwd = 2)
+abline(v = c(29.3,33.9,37.6,41.3,46.7), lwd = 2, lty = 2)
+```
+
+
+##### group 3 國一北上 80-100
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 105 & 公里 > 75)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "Red", lwd = 2)
+abline(v = c(75.0,88.0,92.8,95.6,97.9), lwd = 2, lty = 2)
+```
+
+要注意的一點是 兩條 density curve 間是不能進行比較的
+
+### 向北意外發生地點(3號)
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 80 & 公里 > 25)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+#abline(v = c(30.1,33.8,39.4,44.7,49.8,52.5,55.9,64.8,69.8,78.3), lwd = 2, lty = 2)
+```
+#### 範圍縮至 30-80
+
+##### group 2 國三北上 30-40
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 40 & 公里 > 30)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+abline(v = c(33.8,39.4), lwd = 2, lty = 2)
+```
+
+##### group 2 國三北上 40-50
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 55 & 公里 > 39)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+abline(v = c(39.4,44.7,49.8,52.5), lwd = 2, lty = 2)
+```
+
+
+##### group 3 國三北上 50 - 80 
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 80 & 公里 > 52)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+abline(v = c(52.5,55.9,64.8,69.8), lwd = 2, lty = 2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 向南意外發生地點(1號)
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(main = "事故發生於特定公里公尺之頻率(南向)")
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")%>%
+  select(公里)%>%
+  as.data.frame()
+density(tmp$"公里")%>%lines(col = "Red", lwd = 2)
+
+legend("topright", legend = c("國道三號","國道一號"), lwd = 2, col = c("black", "red"), lty = 1)
+```
+
+#### 縮小範圍至 0-100
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 100)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(main = "事故發生於特定公里公尺之頻率(北向 0~100 公里處)")
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 100)%>%
+  select(公里)%>%
+  as.data.frame()
+density(tmp$"公里")%>%lines(col = "Red", lwd = 2)
+
+legend("topright", legend = c("國道三號","國道一號"), lwd = 2, col = c("black", "red"), lty = 1)
+```
+
+##### group 1 國一南下 15-65
+
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 67 & 公里 > 10)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "Red", lwd = 2)
+abline(v = c(15.5,18.2,24.8,26.4,29.3,33.9,37.6,41.3,46.7,50.9,53.2,56.2,57.8,63.3), lty = 2, lwd = 2)
+```
+
+
+##### group 2 國一南下 80-100
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 102 & 公里 > 78)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "Red", lwd = 2)
+abline(v = c(75.0,88.0,92.8,95.0,98.0,104.5), lwd = 2, lty = 2)
+```
+
+
+
+要注意的一點是 兩條 density curve 間是不能進行比較的
+
+### 向南意外發生地點(3號)
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 82 & 公里 > 23)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+```
+#### 範圍縮至 30-80
+
+##### group 1 國三北上 30-40
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 42 & 公里 > 28)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+abline(v = c(30.1,33.7,39.4,44.7,49.8,55.9), lwd = 2, lty = 2)
+```
+
+##### group 2 國三北上 45-55
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 57 & 公里 > 43)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+abline(v = c(44.7,49.8,52.5,55.9), lwd = 2, lty = 2)
+```
+
+
+##### group 3 國三北上 70-80
+
+```{r}
+tmp = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 82 & 公里 > 68)%>%
+  select(公里)%>%
+  as.data.frame()
+tmp$"公里"%>%densityPlot(col = "green")
+abline(v = c(69.8,78.3), lwd = 2, lty = 2)
+```
+
+
+
+```{r}
+g1n1 = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 30 & 公里 > 20)
+g1n2 = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 50 & 公里 > 30)
+g1n3 = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 100 & 公里 > 80)
+g3n1 = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 40 & 公里 > 30)
+g3n2 = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 50 & 公里 > 40)
+g3n3 = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "北")%>%
+  filter(公里 < 100 & 公里 > 80)
+
+g1s1 = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 65 & 公里 > 15)
+g1s2 = data%>%
+  filter(公路名稱 == "國道1號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 100 & 公里 > 80)
+g3s1 = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 40 & 公里 > 30)
+g3s2 = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 55 & 公里 > 45)
+g3s3 = data%>%
+  filter(公路名稱 == "國道3號")%>%
+  filter(向車道 == "南")%>%
+  filter(公里 < 80 & 公里 > 70)
+```
+
+
+
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+年假和一般日的差異 : 凌晨車輛數量有上升, 高峰後延至早上10點後
+
+
+
+
+
+
+## other 
+
+```{r}
+tmp = y2019%>%
+  filter(day == "2019-06-10")%>%
+  filter(from == "01F0339N")%>%
+  select(day,hour,traffic)%>%
+  group_by(hour)%>%
+  summarise(sum(traffic))%>%
+  as.data.frame()
+tmp$`sum(traffic)`%>%plot(type = "b", pch = 19, main = "平日(6/10~6/14), 測站:01F0339N to 01F0376N", ylim = c(0,6000))
+
+date = c("2019-06-11","2019-06-12","2019-06-13","2019-06-14")
+for(i in 1:length(date)){
+  tmp = y2019%>%
+    filter(day == date[i])%>%
+    filter(from == "01F0339N")%>%
+    select(day,hour,traffic)%>%
+    group_by(hour)%>%
+    summarise(sum(traffic))%>%
+    as.data.frame()
+  tmp$`sum(traffic)`%>%lines(type = "b", pch = 19)
+}
+
+tmp = y2019%>%
+  filter(day == "2019-02-02")%>%
+  filter(from == "01F0339N")%>%
+  select(day,hour,traffic)%>%
+  group_by(hour)%>%
+  summarise(sum(traffic))%>%
+  as.data.frame()
+tmp$`sum(traffic)`%>%plot(type = "b", pch = 19, col = "red", main = "過年(2/2~2/8), 測站:01F0339N to 01F0376N", ylim = c(0,4500))
+
+date = c("2019-02-03","2019-02-04","2019-02-05","2019-02-06","2019-02-07", "2019-02-08")
+for(i in 1:length(date)){
+  tmp = y2019%>%
+    filter(day == date[i])%>%
+    filter(from == "01F0339N")%>%
+    select(day,hour,traffic)%>%
+    group_by(hour)%>%
+    summarise(sum(traffic))%>%
+    as.data.frame()
+  tmp$`sum(traffic)`%>%lines(type = "b", pch = 19, col = "red")
+}
+
+
+tmp = y2019%>%
+  filter(day == "2019-04-04")%>%
+  filter(from == "01F0339N")%>%
+  select(day,hour,traffic)%>%
+  group_by(hour)%>%
+  summarise(sum(traffic))%>%
+  as.data.frame()
+tmp$`sum(traffic)`%>%plot(type = "b", pch = 19, col = "blue", main = "過年(4/4~4/7), 測站: 01F0339N to 01F0376N", ylim = c(0,4500))
+
+date = c("2019-04-05","2019-04-06","2019-04-07")
+for(i in 1:length(date)){
+  tmp = y2019%>%
+    filter(day == date[i])%>%
+    filter(from == "01F0339N")%>%
+    select(day,hour,traffic)%>%
+    group_by(hour)%>%
+    summarise(sum(traffic))%>%
+    as.data.frame()
+  tmp$`sum(traffic)`%>%lines(type = "b", pch = 19, col = "blue")
+}
+
+########################################
+
+tmp = y2019%>%
+  filter(day == "2019-06-10")%>%
+  filter(from == "01F0339N")%>%
+  select(day,hour,traffic)%>%
+  group_by(hour)%>%
+  summarise(sum(traffic))%>%
+  as.data.frame()
+tmp$`sum(traffic)`%>%plot(type = "b", pch = 19, main = "綜合比較, 測站:01F0339N to 01F0376N", ylim = c(0,6000))
+
+date = c("2019-06-11","2019-06-12","2019-06-13","2019-06-14")
+for(i in 1:length(date)){
+  tmp = y2019%>%
+    filter(day == date[i])%>%
+    filter(from == "01F0339N")%>%
+    select(day,hour,traffic)%>%
+    group_by(hour)%>%
+    summarise(sum(traffic))%>%
+    as.data.frame()
+  tmp$`sum(traffic)`%>%lines(type = "b", pch = 19)
+}
+
+date = c("2019-02-02","2019-02-03","2019-02-04","2019-02-05","2019-02-06","2019-02-07", "2019-02-08")
+for(i in 1:length(date)){
+  tmp = y2019%>%
+    filter(day == date[i])%>%
+    filter(from == "01F0339N")%>%
+    select(day,hour,traffic)%>%
+    group_by(hour)%>%
+    summarise(sum(traffic))%>%
+    as.data.frame()
+  tmp$`sum(traffic)`%>%lines(type = "b", pch = 19, col = "red")
+}
+
+data%>%
+  filter(公里 > 339 & 公里 < 376)%>%
+  count(發生時間_時)%>%
+  as.vector()%>%
+  lines(type = "b", pch = 19, main = "事故發生頻率 測站:01F0339N to 01F0376N",col = "green")
+date = c("2019-04-04","2019-04-05","2019-04-06","2019-04-07")
+for(i in 1:length(date)){
+  tmp = y2019%>%
+    filter(day == date[i])%>%
+    filter(from == "01F0339N")%>%
+    select(day,hour,traffic)%>%
+    group_by(hour)%>%
+    summarise(sum(traffic))%>%
+    as.data.frame()
+  tmp$`sum(traffic)`%>%lines(type = "b", pch = 19, col = "blue")
+}
+
+
+data%>%
+  filter(公里 > 339 & 公里 < 376)%>%
+  count(發生時間_時)%>%
+  as.vector()%>%
+  plot(type = "b", pch = 19, main = "事故發生數量 測站:01F0339N to 01F0376N")
+```
+
+```{r eval=FALSE, include=FALSE}
+ind = which(y2019$min %in% c("00","05","10","15","20","25"))
+y2019[ind,6] = "00"
+y2019[-ind,6] = "30"
+
+y2019part1 = y2019%>%group_by(day, hour, min, from, to)%>%summarise(total_speed = mean(speed))%>%group_by(day, hour, min)%>%separate(from, c(NA, "from"), sep = 2)%>%pivot_wider(names_from = from, values_from = total_speed)%>%group_by(day, hour, min)%>%summarise(speed339 = na.omit(F0339N), speed376 = na.omit(F0376N), speed413 = na.omit(F0413N))
+
+y2019part2 = y2019%>%group_by(day, hour, min, from, to)%>%summarise(total_traffic = sum(traffic))%>%group_by(day, hour, min)%>%separate(from, c(NA, "from"), sep = 2)%>%pivot_wider(names_from = from, values_from = total_traffic)%>%group_by(day, hour, min)%>%summarise(traffic339 = na.omit(F0339N), traffic376 = na.omit(F0376N), traffic413 = na.omit(F0413N))
+
+y2019_total = inner_join(y2019part1, y2019part2, by = c("day", "hour", "min"))
+
+write.csv(y2019_total, "C:/Users/User/Desktop/freeway/2019_M05.csv")
+head(y2019part1)
+
+y2019%>%head(20)
+, total_traffic = sum(traffic)
+```
+
+```{r eval=FALSE, include=FALSE}
+y2019_arranged%>%head()
+```
+```{r eval=FALSE, include=FALSE}
+data$發生時間_分 = as.numeric(data$"發生時間_分")
+data%>%head()
+ind = which(data$"發生時間_分" < 60 & data$"發生時間_分" >=30)
+data[ind, 3] = "30"
+data[-ind, 3] = "00"
+colnames(data)[c(1,2,3)] = c("day","hour", "min")
+data$day = gsub("/", "-", data$day)
+data$day = as.Date(data$day)
+data%>%head()
+
+
+data%>%
+  select(day, hour, min)%>%
+  group_by(day, hour, min)%>%
+  mutate(counts = n())
+
+tmp_data = data%>%
+  mutate(dates = paste(day, hour, min, sep = "_"))%>%
+  group_by(dates)%>%
+  mutate(counts = n())
+tmp_data%<>%
+  select(dates, counts)
+tmp_data = unique(tmp_data)
+```
+
+
+
+
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+y2019_arranged%<>%
+  mutate(dates = paste(day, hour, min, sep = "_"))
+
+tmp = left_join(y2019_arranged, tmp_data, by = "dates")
+17520-sum(is.na(tmp$counts))
+y2019_arranged = tmp
+ind = which(is.na(y2019_arranged$counts) == TRUE)
+y2019_arranged[ind, 12] = 0
+sum(is.na(y2019_arranged))
+```
+
